@@ -1,58 +1,92 @@
 # Windows Server Home Lab - Öğrenme ve Uygulama Günlüğü
 
-Yüksek Erişilebilirlik (High Availability) ve Additional Domain Controller (ADC) Kurulumu
+## Phase 4: WSUS (Windows Server Update Services) Kurulumu ve Merkezi Yama Yönetimi
 
-> *"Tek bir Domain Controller, sistem için 'Tek Nokta Hatası' (Single Point of Failure - SPOF) anlamına gelir. Bu aşamada, mimariyi yedekli çalışacak (Redundancy) ve yükü dağıtacak şekilde ikinci bir sunucuyla (ADC) genişleterek kurumsal süreklilik sağladım."*
+> *"Ağdaki tüm cihazların güncellemelerini tek tek internet üzerinden alması, bant genişliği israfı ve güvenlik zafiyetidir. Bu aşamada, şirket içi bir güncelleme otoritesi (WSUS) kurarak ağ trafiğini optimize ettim ve güncellemeler üzerinde merkezi kontrol sağladım."*
 
 **Görev:**
-Linux KVM altyapısında Windows Server 2022 işletim sistemine geçiş yapmak, sanallaştırma sürücülerini (virtio) optimize etmek ve ortama ikinci bir sunucu dahil ederek Additional Domain Controller (ADC) ile Active/Active replikasyon ve DNS yük dengelemesi yapılandırmak.
+Windows Server 2022 üzerinde WSUS rolünün kurularak yapılandırılması; etki alanına dahil edilen Windows 11 istemcisinin Microsoft sunucuları yerine yerel WSUS sunucusuna yönlendirilmesi (GPO ile) ve senkronizasyon/raporlama sorunlarının Kök Neden Analizi (RCA) ile giderilmesi.
 
 ---
 
-### I. KVM Optimizasyonu ve Primary DC (Server 2022) İnşası
-Sistem altyapısı en güncel sunucu işletim sistemine yükseltildi ve Linux ana makine ile tam uyum için gerekli optimizasyonlar sağlandı:
-
-* **Virtio Entegrasyonu:** KVM üzerinde çalışan sanal makinelerde maksimum performans (disk/network I/O) ve ekran çözünürlüğü sorunlarını gidermek için `virtio-win` sürücüleri kuruldu.
-* **Ağ ve Kimlik Yapılandırması:** 
-    * Ana sunucu ismi `Sivas` olarak belirlendi.
-    * Statik IP adresi `192.168.1.200` olarak atandı.
-    * AD DS rolü kurularak "Sivas" sunucusu ortamın Primary Domain Controller'ı (PDC) haline getirildi.
-* **Ön Hazırlık:** Replikasyon testleri için bu ana sunucu üzerinde çeşitli Test Kullanıcıları ve Organizasyonel Birimler (OU) oluşturuldu.
+### I. Ön Hazırlık ve İstemci Entegrasyonu
+WSUS mimarisine geçmeden önce, güncellemeleri alacak olan test ortamı hazırlandı:
+* Server 2022 (Primary DC) üzerinde Active Directory'de yeni bir test kullanıcısı oluşturuldu.
+* Windows 11 istemci makinesi etki alanına (domain) dahil edildi ve oluşturulan kullanıcı ile oturum açılarak profilin oluşması sağlandı.
 
 ---
 
-### II. Additional Domain Controller (ADC) Entegrasyonu
-Ortamın yedekliliğini sağlamak adına ikinci bir Windows Server 2022 makinesi kurularak etki alanına dahil edildi:
+### II. WSUS Rolünün Kurulumu ve Veritabanı Mimarisi
+Sunucu üzerinde WSUS rolü eklenirken, donanım kaynaklarına ve laboratuvar altyapısına uygun konfigürasyonlar tercih edildi:
 
-1. **Rol Yapılandırması:** İkinci sunucuya AD DS rolü eklendi. Promote etme aşamasında "Add a new forest" yerine, ortamı genişletmek için **"Add a domain controller to an existing domain"** seçeneği tercih edildi.
-2. **Kritik Servisler:** 
-    * İkinci sunucunun isim çözümlemesi yapabilmesi ve dizin arama işlemlerini hızlandırması için **DNS Server** ve **Global Catalog (GC)** seçenekleri işaretli bırakıldı. 
-    * Sunucu sadece okuma amaçlı (şube sunucusu) kullanılmayacağı için **RODC (Read-Only Domain Controller)** seçeneği işaretlenmedi. Tam yetkili bir DC olarak yapılandırıldı.
-3. **Replikasyon Hedefi:** Kurulum sihirbazında "Replicate from" seçeneği altında ilk DC (`Sivas`) hedef gösterildi. Veritabanı (NTDS) ve SYSVOL klasör lokasyonları varsayılan standartlarda bırakıldı.
-
----
-
-### III. Replikasyon ve Senkronizasyon Doğrulaması
-İki sunucu arasındaki Multi-Master (Active/Active) çalışma yapısı test edildi:
-
-* **Nesne Senkronizasyonu:** İlk DC'de oluşturulan OU ve kullanıcıların, kurulum tamamlandıktan hemen sonra ADC üzerine eksiksiz bir şekilde geldiği (replicate olduğu) görüldü.
-* **Çift Yönlü İletişim:** İki makineden herhangi birinde yapılan bir değişikliğin diğerine anında yansıdığı doğrulandı. Bu yapı, hem istemci doğrulama yükünü paylaştırmak hem de donanımsal bir çökme anında sistemin kesintisiz çalışmasını (Fault Tolerance) sağlamak için kritiktir.
-* **SYSVOL (GPO) Testi:** Makinelerin birinde oluşturulan yeni bir Group Policy Object (GPO) kuralının, diğer makinede "Yenile" (Refresh) işlemi yapıldığında listeye düştüğü görülerek politika senkronizasyonu onaylandı.
+1. **Rol Seçimi:** Server Manager üzerinden "Windows Server Update Services" rolü eklendi.
+2. **Servis ve Veritabanı Yapılandırması:** 
+    * **WID Connectivity (Windows Internal Database):** İşaretlendi. Ortamda harici bir SQL Server bulunmadığı için WSUS'un kendi dahili veritabanını kullanması sağlandı.
+    * **WSUS Services:** İşaretlendi.
+    * **SQL Server Connectivity:** Harici bir veritabanı olmadığı için bu seçenek devre dışı bırakıldı.
+3. **Depolama Alanı:** Microsoft'tan çekilecek güncellemelerin yerel olarak barındırılacağı dizin `C:\WSUS` olarak belirlendi.
+4. **Post-Deployment:** Kurulum tamamlandıktan sonra Server Manager üzerindeki bildirim paneline gidilerek "Post Deployment Configuration" (Kurulum Sonrası Yapılandırma) işlemi tetiklendi.
 
 ---
 
-### IV. Sistem Yöneticisi Notu (RCA): DNS Yük Dengeleme ve "Cross-DNS" Mimarisi
-* **Karşılaşılan Durum:** ADC yapılandırılırken, ağ ayarlarında DNS adresi olarak sadece ilk DC'nin IP adresi girilmişti. Bu durumda, ADC bir DNS sunucusu olmasına rağmen tüm sorguları ilk makineye yönlendiriyor, bu da yük dengelemesi (Load Balancing) yapılmasını engelliyordu.
-* **Çözüm (Cross-DNS Yapılandırması):** Yedekli ve yük dağılımlı bir DNS mimarisi için bağdaştırıcı ayarları şu şekilde revize edildi:
-    * **Primary DC (`Sivas`):** Preferred DNS: Kendi IP adresi (`127.0.0.1` veya yerel IP) | Alternate DNS: ADC'nin IP adresi.
-    * **Additional DC:** Preferred DNS: Kendi IP adresi | Alternate DNS: Primary DC'nin (`Sivas`) IP adresi.
-* **Sonuç:** Bu "Çapraz DNS" mantığı sayesinde her iki makine de ağa aktif olarak DNS hizmeti vermeye başladı. Bir sunucu kapandığında, istemciler "Alternate DNS" üzerinden diğer sunucuya giderek isim çözümlemeye sorunsuz devam edebilecektir.
+### III. WSUS Yapılandırma Sihirbazı (Configuration Wizard)
+Kurulum sonrası `Tools > Windows Server Update Services` üzerinden yönetim konsolu (sivas paneli) açıldı ve şu parametreler girildi:
+
+* **Upstream Server:** Kurulan makine ortamdaki ilk ve tek WSUS olduğu için "Synchronize from Microsoft Update" (Doğrudan Microsoft'tan çek) seçeneği tercih edildi.
+* **Bağlantı ve Proxy:** İletişim portu olarak varsayılan **8530** kullanıldı. Ağda bir Proxy sunucusu olmadığı için bu adım boş geçildi ve Microsoft sunucularına bağlantı (Start Connecting) sağlandı.
+* **Dil Seçenekleri:** Yalnızca İngilizce (EN) ve Türkçe (TR) güncellemelerin indirilmesi seçilerek disk tasarrufu sağlandı.
+* **Ürün Seçimi (Products):** Sadece laboratuvar ortamında bulunan işletim sistemi olan "Windows 11" seçildi.
+* **Kategori Seçimi (Classifications):** Updates, Upgrades, Security Updates, Critical Updates, Definition Updates ve Tools kategorileri işaretlendi.
+* **Senkronizasyon Takvimi:** Laboratuvar ortamında anlık kontrolü elde tutmak için "Manual" (Elle senkronizasyon) seçildi. İşlemi kendi kontrolümde başlatmak için "Begin initial sync" (Başlangıç senkronizasyonunu başlat) kutucuğu boş bırakılarak sihirbaz tamamlandı.
 
 ---
 
-### V. Topoloji Doğrulaması
-* `Active Directory Users and Computers` (ADUC) yönetim konsolunda "Domain Controllers" OU'su incelendi.
-* Ortamdaki her iki Server 2022 makinesinin de bu OU altında Global Catalog (GC) özellikli tam yetkili etki alanı denetleyicileri olarak listelendiği teyit edildi.
+### IV. Group Policy (GPO) ile İstemci Yönlendirmesi
+**Durum Analizi:** WSUS kurulmuş olsa da, domaindeki istemcilerin (Client) bundan haberi yoktur ve güncellemeleri varsayılan olarak Microsoft'un internetteki sunucularından çekmeye çalışırlar. İstemcilere "Güncellemeleri internetten değil, içerideki şu sunucudan alacaksın" demek için GPO yapılandırıldı.
+
+Group Policy Management üzerinden `WSUS-update` adında yeni bir GPO oluşturuldu ve aşağıdaki yapılandırmalar yapıldı:
+*(Yol: Computer Configuration > Policies > Administrative Templates > Windows Components > Windows Update)*
+
+1. **Specify an intranet Microsoft update service location:** `Enabled` yapıldı. Hem "Set the intranet update service for detecting updates" hem de "Set the intranet statistics server" kısımlarına WSUS adresi olan `http://192.168.1.200:8530` girildi.
+2. **Configure Automatic Updates:** `Enabled` yapıldı. "4 - Auto download and schedule the install" seçilerek, her hafta Pazartesi günü saat 12:00'de indirilen güncellemelerin kurulması ayarlandı.
+3. **Automatic Updates detection frequency:** `Enabled` yapıldı ve istemcinin sunucuya gidip yeni güncelleme olup olmadığını sorma sıklığı 12 saat olarak belirlendi.
+4. **Do not connect to any Windows Update Internet locations:** `Enabled` yapıldı. Bu kritik kural ile makinenin dışarıdaki Microsoft Update sunucularına gitmesi tamamen yasaklandı.
+
+GPO doğrudan etki alanına (Domain) bağlandı. İstemci makinesinde `gpupdate /force` komutu çalıştırılarak kuralların çekilmesi sağlandı. Ardından WSUS yönetim panelinden manuel senkronizasyon başlatıldı.
 
 ---
-**Durum:** Phase 3 başarıyla tamamlandı. Ortam artık donanımsal arızalara karşı dirençli (Redundant) ve yükü dağıtabilen profesyonel bir mimariye kavuştu.
+
+### V. Kök Neden Analizi (RCA) ve Sorun Giderme (Troubleshooting)
+
+**Hata Belirtisi:** 
+Senkronizasyonun bitmesine rağmen Windows 11 istemcisi, WSUS konsolundaki "Computers" sekmesine düşmedi. Ayrıca Windows 11'in kendi ayarlarında "Bazı ayarlar kuruluşunuz tarafından yönetilir" uyarısı görünmüyordu.
+
+**Sorun İzolasyonu ve Test Süreci:**
+1. **Bağlantı Testi (Port 8530):** 
+    * İstemci tarayıcısından `http://192.168.1.200:8530/iuident.cab` adresine gidildi; `404 Not Found` hatası alındı.
+    * Ancak `http://192.168.1.200:8530/ClientWebService/client.asmx` adresine gidildiğinde servisin çalıştığını gösteren "ClientWebServiceClient" WSDL bilgi ekranı başarıyla görüntülendi. Bu, sunucu tarafında IIS/WSUS servisinin ayakta olduğunu kanıtladı.
+2. **Kayıt Defteri (Registry) Testi:** GPO'nun makineye gerçekten uygulanıp uygulanmadığını anlamak için CMD üzerinden şu komut çalıştırıldı:
+    ```cmd
+    reg query HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate
+    ```
+    *Gelen Çıktı:*
+    ```text
+    WUServer    REG_SZ    [http://192.168.1.200:8530](http://192.168.1.200:8530)
+    WUStatusServer    REG_SZ    [http://192.168.1.200:8530](http://192.168.1.200:8530)
+    DoNotConnectToWindowsUpdateInternetLocations    REG_DWORD    0x1
+    ```
+    *Yorum:* Kayıt defteri çıktıları, GPO'nun makineye sorunsuz uygulandığını gösterdi. Hedef adres (192.168.1.200:8530) doğruydu.
+
+**Kök Neden (Root Cause):**
+İstemci tarafındaki Windows Update servisi (wuauserv) ve BITS servisi, eski güncelleme oturumlarını önbellekte (cache) tutmaktaydı. `SoftwareDistribution` klasöründeki eski yetkilendirme bilgileri (Authorization ID) sıfırlanmadığı için makine kendini yeni WSUS sunucusuna tanıtamıyordu.
+
+**Çözüm Uygulaması:**
+İstemci makinesinde komut satırı "Yönetici" (Administrator) olarak açılarak Windows Update servisleri durduruldu, önbellek temizlendi ve zorunlu tetikleme yapıldı:
+```cmd
+net stop wuauserv
+net stop bits
+rmdir /s /q C:\Windows\SoftwareDistribution
+net start wuauserv
+net start bits
+wuauclt /resetauthorization /detectnow
+UsoClient StartScan
